@@ -1,7 +1,6 @@
 import time
 from pathlib import Path
 
-from openai import OpenAI
 import os
 import sys
 import sounddevice as sd
@@ -11,6 +10,7 @@ import wave
 import threading
 from flask import Flask, jsonify
 import simpleaudio as sa
+import whisper
 
 from pydantic_settings import BaseSettings
 
@@ -40,7 +40,8 @@ flask_port = settings.flask_port
 print(f"API Key: {api_key}")
 print(f"Flask Port: {flask_port}")
 
-client = OpenAI(api_key=api_key)
+# Load the Whisper model
+model = whisper.load_model("medium")
 
 app = Flask(__name__)
 
@@ -50,7 +51,6 @@ audio_file_path = None
 recording_thread = None
 audio_data = []
 
-
 def play_wav(file_path):
     # Load the WAV file
     wave_obj = sa.WaveObject.from_wave_file(file_path)
@@ -58,7 +58,6 @@ def play_wav(file_path):
     play_obj = wave_obj.play()
     # Wait for playback to finish before exiting
     play_obj.wait_done()
-
 
 ## Purely useful for debugging microphones.
 # def list_available_devices():
@@ -121,22 +120,37 @@ def save_to_wav(audio_data, file_path=None, samplerate=16000):
 
 
 
-def transcribe_audio(wav_file):
-    # Transcribe the audio using OpenAI Whisper API
+# Read the prompt from a file
+def read_prompt_file(file_path='prompt.txt'):
     try:
-        with open(wav_file, "rb") as audio_file:
-            transcript = client.audio.transcriptions.create(
-                model="whisper-1", file=audio_file, response_format="text"
-            )
-            print(transcript)
-            print(type(transcript))
-            return transcript
-            # return transcript.text
+        with open(file_path, 'r') as file:
+            return file.read().strip()
+    except FileNotFoundError:
+        print(f"Warning: {file_path} not found. Using default prompt.")
+        return ""
+
+# Load the prompt
+prompt = read_prompt_file()
+
+def transcribe_audio(wav_file, initial_prompt=prompt, word_list=None):
+    try:
+        # Create options dictionary
+        options = {}
+        
+        if initial_prompt:
+            options["initial_prompt"] = initial_prompt
+        
+        # Transcribe with options
+        result = model.transcribe(wav_file, **options)
+        transcription = result["text"]
+        print("Transcription:")
+        print(transcription)
+        return transcription
     except Exception as e:
         print(f"Error during transcription: {e}")
         return None
 
-
+# Test API connection with recording
 def test_api_connection_with_recording():
     global is_recording, audio_data
 
@@ -187,28 +201,33 @@ def stop_recording():
     is_recording = False
     recording_thread.join()  # Wait for the recording thread to finish
 
-    # Save the recorded audio to a WAV file, with timestamp as the filename, format the timestamp, add random string
-    # lenght 4 at the end
+    start_time = time.time()
+    # Save the recorded audio to a WAV file
     wav_file_path = Path(settings.base_folder_for_recordings) / f"{time.strftime('%Y-%m-%d-%H:%M:.%S')}-{os.urandom(4).hex()}.wav"
+    print(f"Generated WAV file path in {time.time() - start_time} seconds")
+    start_time = time.time()
     txt_file_path = wav_file_path.with_suffix(".txt")
+    print(f"Generated TXT file path in {time.time() - start_time} seconds")
+    start_time = time.time()
     audio_file_path = save_to_wav(audio_data, file_path=str(wav_file_path))
+    print(f"Audio file saved to WAV in {time.time() - start_time} seconds")
 
     print(f"Audio file saved to: {audio_file_path}")
-    # play_wav(audio_file_path)
+
+    start_time = time.time()
 
     # Transcribe the saved audio file
     transcription = transcribe_audio(audio_file_path)
-    os.remove(audio_file_path)  # Delete the temporary file after transcription
-    # Save the transcription to a text file
+    print(f"Transcription completed in {time.time() - start_time} seconds")
 
+    # Save the transcription to a text file
     with open(txt_file_path, "w") as f:
         f.write(transcription)
-
 
     if transcription:
         return jsonify({"transcription": transcription})
     else:
-        return jsonify({"message": "Error during transcription!"}), 500
+        return jsonify({"message": "Transcription was empty or failed."}), 500
 
 
 if __name__ == "__main__":
