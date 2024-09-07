@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     openai_api_key: str
     flask_port: int = 5006
     base_folder_for_recordings: str
+    use_local_model: bool = False
 
     class Config:
         env_file = ".env"  # Optional: Load environment variables from a .env file
@@ -40,8 +41,13 @@ flask_port = settings.flask_port
 print(f"API Key: {api_key}")
 print(f"Flask Port: {flask_port}")
 
-# Load the Whisper model
-model = whisper.load_model("medium")
+# Load the appropriate model or client
+if settings.use_local_model:
+    import whisper
+    model = whisper.load_model("medium")
+else:
+    from openai import OpenAI
+    client = OpenAI(api_key=settings.openai_api_key)
 
 app = Flask(__name__)
 
@@ -132,23 +138,24 @@ def read_prompt_file(file_path='prompt.txt'):
 # Load the prompt
 prompt = read_prompt_file()
 
-def transcribe_audio(wav_file, initial_prompt=prompt, word_list=None):
+def transcribe_audio(wav_file):
     try:
-        # Create options dictionary
-        options = {}
-        
-        if initial_prompt:
-            options["initial_prompt"] = initial_prompt
-        
-        # Transcribe with options
-        result = model.transcribe(wav_file, **options)
-        transcription = result["text"]
-        print("Transcription:")
+        if settings.use_local_model:
+            # Local model transcription
+            result = model.transcribe(wav_file)
+            transcription = result["text"]
+        else:
+            # Remote OpenAI API transcription
+            with open(wav_file, "rb") as audio_file:
+                transcript = client.audio.transcriptions.create(
+                    model="whisper-1", file=audio_file, response_format="text"
+                )
+                transcription = transcript
         print(transcription)
         return transcription
     except Exception as e:
         print(f"Error during transcription: {e}")
-        return None
+        return ""  # Return an empty string instead of None
 
 # Test API connection with recording
 def test_api_connection_with_recording():
@@ -201,24 +208,15 @@ def stop_recording():
     is_recording = False
     recording_thread.join()  # Wait for the recording thread to finish
 
-    start_time = time.time()
     # Save the recorded audio to a WAV file
     wav_file_path = Path(settings.base_folder_for_recordings) / f"{time.strftime('%Y-%m-%d-%H:%M:.%S')}-{os.urandom(4).hex()}.wav"
-    print(f"Generated WAV file path in {time.time() - start_time} seconds")
-    start_time = time.time()
     txt_file_path = wav_file_path.with_suffix(".txt")
-    print(f"Generated TXT file path in {time.time() - start_time} seconds")
-    start_time = time.time()
     audio_file_path = save_to_wav(audio_data, file_path=str(wav_file_path))
-    print(f"Audio file saved to WAV in {time.time() - start_time} seconds")
 
     print(f"Audio file saved to: {audio_file_path}")
 
-    start_time = time.time()
-
     # Transcribe the saved audio file
     transcription = transcribe_audio(audio_file_path)
-    print(f"Transcription completed in {time.time() - start_time} seconds")
 
     # Save the transcription to a text file
     with open(txt_file_path, "w") as f:
