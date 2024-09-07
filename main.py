@@ -60,14 +60,43 @@ def play_wav(file_path):
     play_obj.wait_done()
 
 
-def record_audio_continuously(max_duration=999999999999999999):
+## Purely useful for debugging microphones.
+# def list_available_devices():
+#     devices = sd.query_devices()
+#     for i, device in enumerate(devices):
+#         print(f"Device {i}: {device['name']} (Input Channels: {device['max_input_channels']})")
+
+# list_available_devices()
+
+def get_preferred_device(preferred_names):
+    devices = sd.query_devices()
+    # Check for preferred devices
+    for name in preferred_names:
+        for i, device in enumerate(devices):
+            if name.lower() in device['name'].lower() and device['max_input_channels'] > 0:
+                print(f"Using device: {device['name']} (Index: {i})")
+                return i  # Return the index of the preferred device
+    # Fallback to default device
+    print("No preferred device found, using default.")
+    return sd.default.device[0]  # Return the default device index
+
+# List of preferred microphones in order of preference
+preferred_microphones = [
+    "C03U multi-pattern microphone",
+    # Add more preferred microphone names here
+]
+
+# Get the preferred device index
+device_index = get_preferred_device(preferred_microphones)
+
+def record_audio_continuously(max_duration=999999999999999999, device_index=None):
     global is_recording, audio_data
 
     samplerate = 16000
     is_recording = True
 
     print("Recording started...")
-    with sd.InputStream(samplerate=samplerate, channels=1, dtype='int16') as stream:
+    with sd.InputStream(samplerate=samplerate, channels=1, dtype='int16', device=device_index) as stream:
         start_time = time.time()
         while is_recording:
             data, _ = stream.read(1024)
@@ -183,8 +212,8 @@ def stop_recording():
 
 
 if __name__ == "__main__":
-    # Test the API connection before starting the server
-    test_api_connection_with_recording()
+    # # Test the API connection before starting the server
+    # test_api_connection_with_recording()
 
     # Start the Flask server
     app.run(host="0.0.0.0", port=int(flask_port))
