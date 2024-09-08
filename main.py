@@ -20,6 +20,7 @@ class Settings(BaseSettings):
     flask_port: int = 5006
     base_folder_for_recordings: str
     use_local_model: bool = False
+    language: str = "en"
 
     class Config:
         env_file = ".env"  # Optional: Load environment variables from a .env file
@@ -142,13 +143,13 @@ def transcribe_audio(wav_file):
     try:
         if settings.use_local_model:
             # Local model transcription
-            result = model.transcribe(wav_file)
+            result = model.transcribe(wav_file, language=settings.language)
             transcription = result["text"]
         else:
             # Remote OpenAI API transcription
             with open(wav_file, "rb") as audio_file:
                 transcript = client.audio.transcriptions.create(
-                    model="whisper-1", file=audio_file, response_format="text"
+                    model="whisper-1", file=audio_file, response_format="text", language=settings.language
                 )
                 transcription = transcript
         print(transcription)
@@ -226,7 +227,6 @@ def stop_recording():
         return jsonify({"transcription": transcription})
     else:
         return jsonify({"message": "Transcription was empty or failed."}), 500
-
 
 if __name__ == "__main__":
     # # Test the API connection before starting the server
