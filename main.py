@@ -10,7 +10,7 @@ import wave
 import threading
 from flask import Flask, jsonify
 import simpleaudio as sa
-import whisper
+from faster_whisper import WhisperModel
 
 from pydantic_settings import BaseSettings
 
@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     base_folder_for_recordings: str
     use_local_model: bool = False
     language: str = "en"
+    use_faster_whisper: bool = False  # Add this new setting
 
     class Config:
         env_file = ".env"  # Optional: Load environment variables from a .env file
@@ -42,10 +43,44 @@ flask_port = settings.flask_port
 print(f"API Key: {api_key}")
 print(f"Flask Port: {flask_port}")
 
+def print_gpu_memory_info():
+    if torch.cuda.is_available():
+        print(f"Total GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
+        print(f"Allocated GPU memory: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
+        print(f"Cached GPU memory: {torch.cuda.memory_reserved() / 1e9:.2f} GB")
+        print(f"Free GPU memory: {(torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated() - torch.cuda.memory_reserved()) / 1e9:.2f} GB")
+    else:
+        print("CUDA is not available. Running on CPU.")
+
 # Load the appropriate model or client
 if settings.use_local_model:
-    import whisper
-    model = whisper.load_model("medium")
+    if settings.use_faster_whisper:
+        print("Using faster-whisper model")
+        model = WhisperModel("small", device="cuda" if torch.cuda.is_available() else "cpu", compute_type="float16" if torch.cuda.is_available() else "int8")
+    else:
+        import torch
+        print(f"CUDA available: {torch.cuda.is_available()}")
+        print(f"CUDA version: {torch.version.cuda}")
+        print(f"Current device: {torch.cuda.current_device()}")
+        print(f"Device name: {torch.cuda.get_device_name(0)}")
+        print(torch.__version__)
+        print(torch.cuda.is_available())
+        import whisper
+        
+        print("GPU memory before loading model:")
+        print_gpu_memory_info()
+        
+        try:
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            model = whisper.load_model("small").to(device)
+        except torch.cuda.OutOfMemoryError:
+            print("GPU memory insufficient, falling back to CPU")
+            device = "cpu"
+            model = whisper.load_model("small").to(device)
+        print(f"Using device: {device}")
+        
+        print("GPU memory after loading model:")
+        print_gpu_memory_info()
 else:
     from openai import OpenAI
     client = OpenAI(api_key=settings.openai_api_key)
@@ -76,6 +111,9 @@ def play_wav(file_path):
 
 def get_preferred_device(preferred_names):
     devices = sd.query_devices()
+    # Print all available audio devices
+    for i, device in enumerate(devices):
+        print(f"Device {i}: {device['name']} (Input Channels: {device['max_input_channels']})")
     # Check for preferred devices
     for name in preferred_names:
         for i, device in enumerate(devices):
@@ -142,9 +180,19 @@ prompt = read_prompt_file()
 def transcribe_audio(wav_file):
     try:
         if settings.use_local_model:
-            # Local model transcription
-            result = model.transcribe(wav_file, language=settings.language)
-            transcription = result["text"]
+            if settings.use_faster_whisper:
+                # Faster-whisper transcription
+                segments, info = model.transcribe(wav_file, beam_size=5, language=settings.language)
+                transcription = " ".join([segment.text for segment in segments])
+            else:
+                # Local model transcription
+                audio = whisper.load_audio(wav_file)
+                audio = whisper.pad_or_trim(audio)
+                mel = whisper.log_mel_spectrogram(audio).to(model.device)
+                _, probs = model.detect_language(mel)
+                options = whisper.DecodingOptions(language=settings.language, fp16=torch.cuda.is_available())
+                result = whisper.decode(model, mel, options)
+                transcription = result.text
         else:
             # Remote OpenAI API transcription
             with open(wav_file, "rb") as audio_file:
