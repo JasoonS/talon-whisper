@@ -88,9 +88,10 @@ if settings.use_local_model:
         
         print("GPU memory after loading model:")
         print_gpu_memory_info()
-else:
-    from openai import OpenAI
-    client = OpenAI(api_key=settings.openai_api_key)
+
+# else: # always use openai for longer transcription
+from openai import OpenAI
+client = OpenAI(api_key=settings.openai_api_key)
 
 app = Flask(__name__)
 
@@ -198,9 +199,9 @@ def read_prompt_file(file_path='prompt.txt'):
 # Load the prompt
 prompt = read_prompt_file()
 
-def transcribe_audio(audio_file):
+def transcribe_audio(audio_file, use_openai=False):
     try:
-        if settings.use_local_model:
+        if settings.use_local_model and not use_openai:
             print(f"Using {settings.use_faster_whisper} for transcription")
             if settings.use_faster_whisper:
                 # Faster-whisper transcription
@@ -226,6 +227,7 @@ def transcribe_audio(audio_file):
                 transcription = result.text
         else:
             # Remote OpenAI API transcription
+            print("Using OpenAI API for transcription")
             with open(audio_file, "rb") as audio_file:
                 transcript = client.audio.transcriptions.create(
                     model="whisper-1", 
@@ -299,8 +301,14 @@ def stop_recording():
 
     print(f"Audio file saved to: {audio_file_path}")
 
+    # Calculate the duration of the recording
+    duration = len(np.concatenate(audio_data)) / 16000  # Assuming 16000 Hz sample rate
+
+    # Decide whether to use the local model or the OpenAI API
+    use_openai = duration > 30 ## I get 'out of memory' errors for anything longer than ~30 seconds. So send them to openai for now.
+
     # Transcribe the saved audio file
-    transcription = transcribe_audio(audio_file_path)
+    transcription = transcribe_audio(audio_file_path, use_openai=use_openai)
 
     # Save the transcription to a text file
     with open(txt_file_path, "w") as f:
