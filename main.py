@@ -11,6 +11,7 @@ import threading
 from flask import Flask, jsonify
 import simpleaudio as sa
 from faster_whisper import WhisperModel
+import torch  # Add this import
 
 from pydantic_settings import BaseSettings
 
@@ -21,15 +22,17 @@ class Settings(BaseSettings):
     base_folder_for_recordings: str
     use_local_model: bool = False
     language: str = "en"
-    use_faster_whisper: bool = False  # Add this new setting
+    use_faster_whisper: bool = False
+    faster_whisper_model: str = "large-v3"
+    whisper_model: str = "medium"
 
     class Config:
         env_file = ".env"  # Optional: Load environment variables from a .env file
         env_file_encoding = "utf-8"
 
 # Load settings
-
 settings = Settings()
+
 # Make sure the folder for recordings exists, if not create it, and print that it was created
 if not os.path.exists(settings.base_folder_for_recordings):
     os.makedirs(settings.base_folder_for_recordings)
@@ -55,10 +58,14 @@ def print_gpu_memory_info():
 # Load the appropriate model or client
 if settings.use_local_model:
     if settings.use_faster_whisper:
-        print("Using faster-whisper model")
-        model = WhisperModel("small", device="cuda" if torch.cuda.is_available() else "cpu", compute_type="float16" if torch.cuda.is_available() else "int8")
+        print(f"Using faster-whisper model: {settings.faster_whisper_model}")
+        device = "cuda" if torch.cuda.is_available() else "cpu"
+        compute_type = "float16" if torch.cuda.is_available() else "int8"
+        model = WhisperModel(settings.faster_whisper_model, device=device, compute_type=compute_type)
+        print_gpu_memory_info()
     else:
         import torch
+        print(f"Using Whisper model: {settings.whisper_model}")
         print(f"CUDA available: {torch.cuda.is_available()}")
         print(f"CUDA version: {torch.version.cuda}")
         print(f"Current device: {torch.cuda.current_device()}")
@@ -68,11 +75,10 @@ if settings.use_local_model:
         import whisper
         
         print("GPU memory before loading model:")
-        print_gpu_memory_info()
         
         try:
             device = "cuda" if torch.cuda.is_available() else "cpu"
-            model = whisper.load_model("small").to(device)
+            model = whisper.load_model(settings.whisper_model).to(device)
         except torch.cuda.OutOfMemoryError:
             print("GPU memory insufficient, falling back to CPU")
             device = "cpu"
@@ -117,16 +123,21 @@ def get_preferred_device(preferred_names):
     # Check for preferred devices
     for name in preferred_names:
         for i, device in enumerate(devices):
-            if name.lower() in device['name'].lower() and device['max_input_channels'] > 0:
-                print(f"Using device: {device['name']} (Index: {i})")
-                return i  # Return the index of the preferred device
+            if name.lower() in device['name'].lower(): 
+                # if device['max_input_channels'] > 0: ## My mic was sometimes showing as 0 input channels so removed this.
+                  print(f"Using device: {device['name']} (Index: {i})")
+                  return i  # Return the index of the preferred device
+                # else:
+                #     print(f"Device {device['name']} has no input channels.")
     # Fallback to default device
     print("No preferred device found, using default.")
     return sd.default.device[0]  # Return the default device index
 
 # List of preferred microphones in order of preference
 preferred_microphones = [
-    "C03U multi-pattern microphone",
+    # "C03U multi-pattern microphone",
+    # "Samson C03U",
+    "C03U",
     # Add more preferred microphone names here
 ]
 
@@ -180,9 +191,15 @@ prompt = read_prompt_file()
 def transcribe_audio(wav_file):
     try:
         if settings.use_local_model:
+            print(f"Using {settings.use_faster_whisper} for transcription")
             if settings.use_faster_whisper:
                 # Faster-whisper transcription
-                segments, info = model.transcribe(wav_file, beam_size=5, language=settings.language)
+                segments, info = model.transcribe(
+                    wav_file, 
+                    beam_size=5, 
+                    language=settings.language,
+                    initial_prompt=prompt
+                )
                 transcription = " ".join([segment.text for segment in segments])
             else:
                 # Local model transcription
@@ -190,14 +207,22 @@ def transcribe_audio(wav_file):
                 audio = whisper.pad_or_trim(audio)
                 mel = whisper.log_mel_spectrogram(audio).to(model.device)
                 _, probs = model.detect_language(mel)
-                options = whisper.DecodingOptions(language=settings.language, fp16=torch.cuda.is_available())
+                options = whisper.DecodingOptions(
+                    language=settings.language, 
+                    fp16=torch.cuda.is_available(),
+                    prompt=prompt
+                )
                 result = whisper.decode(model, mel, options)
                 transcription = result.text
         else:
             # Remote OpenAI API transcription
             with open(wav_file, "rb") as audio_file:
                 transcript = client.audio.transcriptions.create(
-                    model="whisper-1", file=audio_file, response_format="text", language=settings.language
+                    model="whisper-1", 
+                    file=audio_file, 
+                    response_format="text", 
+                    language=settings.language,
+                    prompt=prompt
                 )
                 transcription = transcript
         print(transcription)
