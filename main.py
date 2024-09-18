@@ -12,6 +12,7 @@ from flask import Flask, jsonify
 import simpleaudio as sa
 from faster_whisper import WhisperModel
 import torch  # Add this import
+from pydub import AudioSegment
 
 from pydantic_settings import BaseSettings
 
@@ -162,16 +163,25 @@ def record_audio_continuously(max_duration=999999999999999999, device_index=None
     print("Recording stopped.")
 
 
-def save_to_wav(audio_data, file_path=None, samplerate=16000):
+def save_to_mp3(audio_data, file_path=None, samplerate=16000):
     if file_path is None:
-        file_path = os.path.join(tempfile.gettempdir(), "recording.wav")
+        file_path = os.path.join(tempfile.gettempdir(), "recording.mp3")
 
-    # save audio to path and return path
-    with wave.open(file_path, "wb") as wf:
+    # Save audio to a temporary WAV file first
+    temp_wav_path = file_path.replace(".mp3", ".wav")
+    with wave.open(temp_wav_path, "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)  # 2 bytes = 16 bits
         wf.setframerate(samplerate)
         wf.writeframes(np.concatenate(audio_data).tobytes())
+
+    # Convert WAV to MP3
+    audio = AudioSegment.from_wav(temp_wav_path)
+    audio.export(file_path, format="mp3")
+
+    # Remove the temporary WAV file
+    os.remove(temp_wav_path)
+
     return file_path
 
 
@@ -188,14 +198,14 @@ def read_prompt_file(file_path='prompt.txt'):
 # Load the prompt
 prompt = read_prompt_file()
 
-def transcribe_audio(wav_file):
+def transcribe_audio(audio_file):
     try:
         if settings.use_local_model:
             print(f"Using {settings.use_faster_whisper} for transcription")
             if settings.use_faster_whisper:
                 # Faster-whisper transcription
                 segments, info = model.transcribe(
-                    wav_file, 
+                    audio_file, 
                     beam_size=5, 
                     language=settings.language,
                     initial_prompt=prompt
@@ -203,7 +213,7 @@ def transcribe_audio(wav_file):
                 transcription = " ".join([segment.text for segment in segments])
             else:
                 # Local model transcription
-                audio = whisper.load_audio(wav_file)
+                audio = whisper.load_audio(audio_file)
                 audio = whisper.pad_or_trim(audio)
                 mel = whisper.log_mel_spectrogram(audio).to(model.device)
                 _, probs = model.detect_language(mel)
@@ -216,7 +226,7 @@ def transcribe_audio(wav_file):
                 transcription = result.text
         else:
             # Remote OpenAI API transcription
-            with open(wav_file, "rb") as audio_file:
+            with open(audio_file, "rb") as audio_file:
                 transcript = client.audio.transcriptions.create(
                     model="whisper-1", 
                     file=audio_file, 
@@ -282,10 +292,10 @@ def stop_recording():
     is_recording = False
     recording_thread.join()  # Wait for the recording thread to finish
 
-    # Save the recorded audio to a WAV file
-    wav_file_path = Path(settings.base_folder_for_recordings) / f"{time.strftime('%Y-%m-%d-%H:%M:.%S')}-{os.urandom(4).hex()}.wav"
-    txt_file_path = wav_file_path.with_suffix(".txt")
-    audio_file_path = save_to_wav(audio_data, file_path=str(wav_file_path))
+    # Save the recorded audio to an MP3 file
+    mp3_file_path = Path(settings.base_folder_for_recordings) / f"{time.strftime('%Y-%m-%d-%H:%M:%S')}-{os.urandom(4).hex()}.mp3"
+    txt_file_path = mp3_file_path.with_suffix(".txt")
+    audio_file_path = save_to_mp3(audio_data, file_path=str(mp3_file_path))
 
     print(f"Audio file saved to: {audio_file_path}")
 
