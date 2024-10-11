@@ -139,6 +139,8 @@ def get_preferred_device(preferred_names):
 preferred_microphones = [
     # "C03U multi-pattern microphone",
     # "Samson C03U",
+    "MVX2U",
+    "Shure MVX2U Mono",
     "C03U",
     # Add more preferred microphone names here
 ]
