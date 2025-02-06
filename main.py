@@ -25,8 +25,8 @@ class Settings(BaseSettings):
     use_faster_whisper: bool = False
     faster_whisper_model: str = "large-v3"
     whisper_model: str = "medium"
-    max_duration_for_local_model:int = 40
-    max_duration_for_openai:int = 200
+    max_duration_for_local_model: int = 40
+    max_duration_for_openai: int = 200
 
     class Config:
         env_file = ".env"  # Optional: Load environment variables from a .env file
@@ -75,9 +75,9 @@ if settings.use_local_model:
         print(torch.__version__)
         print(torch.cuda.is_available())
         import whisper
-        
+
         print("GPU memory before loading model:")
-        
+
         try:
             device = "cuda" if torch.cuda.is_available() else "cpu"
             model = whisper.load_model(settings.whisper_model).to(device)
@@ -86,7 +86,7 @@ if settings.use_local_model:
             device = "cpu"
             model = whisper.load_model("small").to(device)
         print(f"Using device: {device}")
-        
+
         print("GPU memory after loading model:")
         print_gpu_memory_info()
 
@@ -126,10 +126,10 @@ def get_preferred_device(preferred_names):
     # Check for preferred devices
     for name in preferred_names:
         for i, device in enumerate(devices):
-            if name.lower() in device['name'].lower(): 
+            if name.lower() in device['name'].lower():
                 # if device['max_input_channels'] > 0: ## My mic was sometimes showing as 0 input channels so removed this.
-                  print(f"Using device: {device['name']} (Index: {i})")
-                  return i  # Return the index of the preferred device
+                print(f"Using device: {device['name']} (Index: {i})")
+                return i  # Return the index of the preferred device
                 # else:
                 #     print(f"Device {device['name']} has no input channels.")
     # Fallback to default device
@@ -166,7 +166,6 @@ def record_audio_continuously(max_duration=999999999999, device_index=None):
 
     print("Recording stopped.")
 
-
 def save_to_mp3(audio_data, file_path=None, samplerate=16000):
     if file_path is None:
         file_path = os.path.join(tempfile.gettempdir(), "recording.mp3")
@@ -188,8 +187,6 @@ def save_to_mp3(audio_data, file_path=None, samplerate=16000):
 
     return file_path
 
-
-
 # Read the prompt from a file
 def read_prompt_file(file_path='prompt.txt'):
     try:
@@ -205,18 +202,22 @@ prompt = read_prompt_file()
 def transcribe_audio(audio_file, use_openai=False):
     try:
         if settings.use_local_model and not use_openai:
-            print(f"Using {settings.use_faster_whisper} for transcription")
             if settings.use_faster_whisper:
-                # Faster-whisper transcription
-                segments, info = model.transcribe(
-                    audio_file, 
-                    beam_size=5, 
+                # NEW: Using batched transcription for improved speed!
+                print("Using faster-whisper batched transcription for improved speed")
+                from faster_whisper import BatchedInferencePipeline
+                batched_model = BatchedInferencePipeline(model=model)
+                segments, info = batched_model.transcribe(
+                    audio_file,
+                    beam_size=5,
                     language=settings.language,
-                    initial_prompt=prompt
+                    initial_prompt=prompt,
+                    batch_size=16  # Adjust batch_size as needed for your hardware
                 )
                 transcription = " ".join([segment.text for segment in segments])
             else:
-                # Local model transcription
+                # Local model transcription using Whisper (non-batched)
+                import whisper
                 audio = whisper.load_audio(audio_file)
                 audio = whisper.pad_or_trim(audio)
                 mel = whisper.log_mel_spectrogram(audio).to(model.device)
@@ -231,11 +232,11 @@ def transcribe_audio(audio_file, use_openai=False):
         else:
             # Remote OpenAI API transcription
             print("Using OpenAI API for transcription")
-            with open(audio_file, "rb") as audio_file:
+            with open(audio_file, "rb") as audio_file_obj:
                 transcript = client.audio.transcriptions.create(
-                    model="whisper-1", 
-                    file=audio_file, 
-                    response_format="text", 
+                    model="whisper-1",
+                    file=audio_file_obj,
+                    response_format="text",
                     language=settings.language,
                     prompt=prompt
                 )
@@ -253,7 +254,7 @@ def test_api_connection_with_recording():
     try:
         # Perform a 1-second test recording
         record_audio_continuously(max_duration=2)
-        wav_file = save_to_wav(audio_data)
+        wav_file = save_to_mp3(audio_data)
         is_recording = False
 
         # Test transcription
@@ -270,7 +271,6 @@ def test_api_connection_with_recording():
         print(f"Error during API connection test: {e}")
         sys.exit(1)
 
-
 @app.route("/start", methods=["POST"])
 def start_recording():
     global is_recording, recording_thread, audio_data
@@ -284,7 +284,6 @@ def start_recording():
     recording_thread.start()
 
     return jsonify({"message": "Recording started!"})
-
 
 @app.route("/stop", methods=["POST"])
 def stop_recording():
