@@ -16,7 +16,6 @@ from pydub import AudioSegment
 
 from pydantic_settings import BaseSettings
 
-
 class Settings(BaseSettings):
     openai_api_key: str
     flask_port: int = 5006
@@ -26,6 +25,8 @@ class Settings(BaseSettings):
     use_faster_whisper: bool = False
     faster_whisper_model: str = "large-v3"
     whisper_model: str = "medium"
+    max_duration_for_local_model:int = 40
+    max_duration_for_openai:int = 200
 
     class Config:
         env_file = ".env"  # Optional: Load environment variables from a .env file
@@ -148,7 +149,7 @@ preferred_microphones = [
 # Get the preferred device index
 device_index = get_preferred_device(preferred_microphones)
 
-def record_audio_continuously(max_duration=999999999999999999, device_index=None):
+def record_audio_continuously(max_duration=999999999999, device_index=None):
     global is_recording, audio_data
 
     samplerate = 16000
@@ -303,11 +304,22 @@ def stop_recording():
 
     print(f"Audio file saved to: {audio_file_path}")
 
-    # Calculate the duration of the recording
+    # Calculate the duration of the recording in seconds
     duration = len(np.concatenate(audio_data)) / 16000  # Assuming 16000 Hz sample rate
+    print(f"Recording duration: {duration:.2f} seconds")
 
     # Decide whether to use the local model or the OpenAI API
-    use_openai = duration > 30 ## I get 'out of memory' errors for anything longer than ~30 seconds. So send them to openai for now.
+    use_openai = duration > settings.max_duration_for_local_model
+
+    # If the recording is longer than 2 minutes and OpenAI would be used,
+    # prompt the user in the terminal to check if the long duration was intended.
+    if use_openai and duration > settings.max_duration_for_openai:
+        print("Warning: The recording is longer than 2 minutes.")
+        print("This will use the OpenAI API for transcription, which can be costly.")
+        user_input = input("Did you intend to record such a long audio? Type 'yes' to proceed, or any other key to abort transcription: ")
+        if user_input.strip().lower() not in ["yes", "y"]:
+            print("Transcription aborted by user.")
+            return jsonify({"message": "Transcription aborted by user due to long recording duration."}), 400
 
     # Transcribe the saved audio file
     transcription = transcribe_audio(audio_file_path, use_openai=use_openai)
