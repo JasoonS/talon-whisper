@@ -28,7 +28,7 @@ class Settings(BaseSettings):
     use_faster_whisper: bool = False
     faster_whisper_model: str = "large-v3"
     whisper_model: str = "medium"
-    max_duration_for_local_model: int = 40
+    max_duration_for_local_model: int = 60
     max_duration_for_openai: int = 200
 
     class Config:
@@ -218,8 +218,11 @@ def transcribe_audio(audio_file, use_openai=False):
                     language=settings.language,
                     prompt=prompt
                 )
-                transcription = transcript
-        logging.info(transcription)
+
+        transcription = transcription.lstrip()
+        if not transcription.endswith(" "):
+            ## I added this so I can continuously dictate, and spaces are added between sentences without extra keyboard input.
+            transcription += " "
         return transcription
     except Exception as e:
         logging.error(f"Error during transcription: {e}")
@@ -310,6 +313,8 @@ def stop_recording():
     except Exception as e:
         logging.error(f"Error during transcription process: {e}")
 
+    print(f"{transcription}")
+
     # Save the transcription to a text file
     try:
         with open(txt_file_path, "w") as f:
@@ -323,6 +328,7 @@ def stop_recording():
     else:
         logging.info("No transcription result produced.")
         return jsonify({"message": "No transcription result produced."}), 200
+
 
 if __name__ == "__main__":
     # Optionally, you can test the connection before starting the server:
