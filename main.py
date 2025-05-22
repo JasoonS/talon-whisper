@@ -211,7 +211,7 @@ def transcribe_audio(audio_file, use_openai=False):
         else:
             logging.info("Using OpenAI API for transcription")
             with open(audio_file, "rb") as audio_file_obj:
-                transcript = client.audio.transcriptions.create(
+                transcription = client.audio.transcriptions.create(
                     model="whisper-1",
                     file=audio_file_obj,
                     response_format="text",
