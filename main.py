@@ -72,7 +72,39 @@ if settings.use_local_model:
         logging.info(f"Using faster-whisper model: {settings.faster_whisper_model}")
         device = "cuda" if torch.cuda.is_available() else "cpu"
         compute_type = "float16" if torch.cuda.is_available() else "int8"
-        model = WhisperModel(settings.faster_whisper_model, device=device, compute_type=compute_type)
+        logging.info(f"Using device: {device}")
+        
+        try:
+            # Try to load the model with offline mode first
+            logging.info("Attempting to load model in offline mode...")
+            model = WhisperModel(
+                settings.faster_whisper_model, 
+                device=device, 
+                compute_type=compute_type,
+                local_files_only=True  # Force offline mode
+            )
+            logging.info(f"Model loaded successfully in offline mode")
+        except Exception as e:
+            logging.warning(f"Failed to load model in offline mode: {e}")
+            logging.info("Attempting to load model with online verification...")
+            try:
+                model = WhisperModel(
+                    settings.faster_whisper_model, 
+                    device=device, 
+                    compute_type=compute_type
+                )
+                logging.info(f"Model loaded successfully with online verification")
+            except Exception as e2:
+                logging.error(f"Failed to load model: {e2}")
+                logging.info("Falling back to smaller model...")
+                model = WhisperModel(
+                    "base", 
+                    device=device, 
+                    compute_type=compute_type,
+                    local_files_only=True
+                )
+                logging.info(f"Fallback model loaded successfully")
+        
         print_gpu_memory_info()
     else:
         import whisper
@@ -228,6 +260,10 @@ def transcribe_audio(audio_file, use_openai=False):
         logging.error(f"Error during transcription: {e}")
         return ""
 
+# # If a transcription is needed, uncomment this and run the script with the correct path to the audio file.
+# transcription = transcribe_audio("/home/jasoons/Music/recordings/2025-05-22-17:35:00-a4a73bc0.mp3", use_openai=False)
+# print(transcription)
+
 def test_api_connection_with_recording():
     global is_recording, audio_data
     try:
@@ -260,6 +296,9 @@ def start_recording():
 
 @app.route("/stop", methods=["POST"])
 def stop_recording():
+    ### For testing, uncomment the following and comment out the rest of the function.
+    # result = """abcdefghijklmnopqrstuvwxyz 1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ ABCDEFGHIJKLMNOPQRSTUVWXYZ ABCDEFGHIJKLMNOPQRSTUVWXYZ ABCDEFGHIJKLMNOPQRSTUVWXYZ ABCDEFGHIJKLMNOPQRSTUVWXYZ ABCDEFGHIJKLMNOPQRSTUVWXYZ 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890  1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890"""
+
     global is_recording, recording_thread, audio_file_path
     if not is_recording:
         return jsonify({"message": "No recording is currently in progress!"}), 400
