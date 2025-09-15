@@ -2,6 +2,7 @@ import time
 from pathlib import Path
 import os
 import sys
+import subprocess
 import sounddevice as sd
 import numpy as np
 import tempfile
@@ -65,6 +66,25 @@ is_recording = False
 audio_file_path = None
 recording_thread = None
 audio_data = []  # This list will hold chunks of recorded data
+
+# Max recording length safeguard (seconds)
+MAX_RECORDING_SECONDS = 120
+
+# Auto-stop and pre-saved artifacts
+auto_stop_triggered = False
+auto_saved_mp3_path = None
+auto_saved_txt_path = None
+auto_saved_transcription = None
+
+def send_notification(title: str, message: str) -> None:
+    """Send a desktop notification on Linux using notify-send, with fallbacks."""
+    try:
+        subprocess.run(["notify-send", title, message], check=False)
+    except Exception as e:
+        logging.warning(f"Notification failed: {e}")
+    # Also log and print for visibility when notifications are off
+    logging.info(f"[NOTIFICATION] {title}: {message}")
+    print(f"[NOTIFICATION] {title}: {message}")
 
 # Load the appropriate model or client
 if settings.use_local_model:
@@ -167,12 +187,11 @@ device_index = get_preferred_device(preferred_microphones)
 
 # Dummy implementation; replace with your actual audio recording logic.
 def record_audio_continuously(max_duration=999999, device_index=None):
-    global is_recording, audio_data
-def record_audio_continuously(max_duration=999999999999, device_index=None):
-    global is_recording, audio_data
+    global is_recording, audio_data, auto_stop_triggered, auto_saved_mp3_path, auto_saved_txt_path, auto_saved_transcription
 
     samplerate = 16000
     is_recording = True
+    auto_limit_hit = False
 
     print("Recording started...")
     with sd.InputStream(samplerate=samplerate, channels=1, dtype='int16', device=device_index) as stream:
@@ -180,10 +199,63 @@ def record_audio_continuously(max_duration=999999999999, device_index=None):
         while is_recording:
             data, _ = stream.read(1024)
             audio_data.append(data)
-            if time.time() - start_time >= max_duration:
+            elapsed = time.time() - start_time
+            if elapsed >= max_duration:
+                break
+            if elapsed >= MAX_RECORDING_SECONDS:
+                auto_limit_hit = True
+                is_recording = False
                 break
 
     print("Recording stopped.")
+
+    # If we hit the auto limit, process and save immediately
+    if auto_limit_hit:
+        try:
+            with audio_data_lock:
+                data_copy = list(audio_data)
+                audio_data.clear()
+
+            if not data_copy:
+                logging.error("No audio data captured at auto-stop; nothing to save.")
+                send_notification("Recording auto-stopped", "No audio data captured; nothing saved.")
+                return
+
+            mp3_file_path = Path(settings.base_folder_for_recordings) / f"{time.strftime('%Y-%m-%d-%H:%M:%S')}-{os.urandom(4).hex()}.mp3"
+            txt_file_path = mp3_file_path.with_suffix(".txt")
+
+            try:
+                audio_file_path_local = save_to_mp3(data_copy, file_path=str(mp3_file_path))
+                duration = len(np.concatenate(data_copy)) / 16000
+            except Exception as e:
+                logging.error(f"Error saving MP3 file at auto-stop: {e}")
+                send_notification("Recording auto-stopped", "Failed to save audio file.")
+                return
+
+            use_openai = duration > settings.max_duration_for_local_model
+            transcription = ""
+            try:
+                transcription = transcribe_audio(audio_file_path_local, use_openai=use_openai)
+            except Exception as e:
+                logging.error(f"Error during transcription at auto-stop: {e}")
+
+            try:
+                with open(txt_file_path, "w") as f:
+                    f.write(transcription if transcription is not None else "")
+            except Exception as e:
+                logging.error(f"Error saving transcription file at auto-stop: {e}")
+
+            auto_stop_triggered = True
+            auto_saved_mp3_path = str(mp3_file_path)
+            auto_saved_txt_path = str(txt_file_path)
+            auto_saved_transcription = transcription
+
+            send_notification(
+                "Recording auto-stopped at 120s",
+                "Audio and transcription saved. Press stop to retrieve."
+            )
+        except Exception as e:
+            logging.error(f"Unhandled error in auto-stop processing: {e}")
 
 
 def save_to_mp3(audio_data, file_path=None, samplerate=16000):
@@ -285,10 +357,16 @@ def test_api_connection_with_recording():
 @app.route("/start", methods=["POST"])
 def start_recording():
     global is_recording, recording_thread, audio_data
+    global auto_stop_triggered, auto_saved_mp3_path, auto_saved_txt_path, auto_saved_transcription
     if is_recording:
         return jsonify({"message": "Recording is already in progress!"}), 400
     with audio_data_lock:
         audio_data.clear()  # Clear any previous data safely
+    # Reset auto-stop artifacts for a fresh session
+    auto_stop_triggered = False
+    auto_saved_mp3_path = None
+    auto_saved_txt_path = None
+    auto_saved_transcription = None
     is_recording = True
     recording_thread = threading.Thread(target=record_audio_continuously)
     recording_thread.start()
@@ -300,16 +378,42 @@ def stop_recording():
     # result = """abcdefghijklmnopqrstuvwxyz 1234567890ABCDEFGHIJKLMNOPQRSTUVWXYZ ABCDEFGHIJKLMNOPQRSTUVWXYZ ABCDEFGHIJKLMNOPQRSTUVWXYZ ABCDEFGHIJKLMNOPQRSTUVWXYZ ABCDEFGHIJKLMNOPQRSTUVWXYZ ABCDEFGHIJKLMNOPQRSTUVWXYZ 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890  1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890 1234567890"""
 
     global is_recording, recording_thread, audio_file_path
+    global auto_stop_triggered, auto_saved_mp3_path, auto_saved_txt_path, auto_saved_transcription
     if not is_recording:
+        # If an auto-stop occurred, return the pre-saved result immediately
+        if auto_stop_triggered and auto_saved_transcription is not None:
+            response = {"transcription": auto_saved_transcription, "auto_stopped": True}
+            # Reset state after serving the result
+            auto_stop_triggered = False
+            return jsonify(response)
         return jsonify({"message": "No recording is currently in progress!"}), 400
 
     # Stop the recording and wait for the thread to finish
     is_recording = False
-    recording_thread.join()
+    if recording_thread is not None and recording_thread.is_alive():
+        recording_thread.join()
 
     # Prepare paths for saving the audio and transcription files
     mp3_file_path = Path(settings.base_folder_for_recordings) / f"{time.strftime('%Y-%m-%d-%H:%M:%S')}-{os.urandom(4).hex()}.mp3"
     txt_file_path = mp3_file_path.with_suffix(".txt")
+
+    # If auto-stop already processed and saved artifacts, reuse them
+    if auto_stop_triggered and auto_saved_mp3_path and auto_saved_txt_path is not None:
+        mp3_file_path = Path(auto_saved_mp3_path)
+        txt_file_path = Path(auto_saved_txt_path)
+        try:
+            with open(txt_file_path, "r") as f:
+                transcription = f.read()
+        except Exception as e:
+            logging.error(f"Error reading pre-saved transcription: {e}")
+            transcription = auto_saved_transcription or ""
+        # Reset auto-stop state after use
+        auto_stop_triggered = False
+        print(f"{transcription}")
+        if transcription:
+            return jsonify({"transcription": transcription, "auto_stopped": True})
+        else:
+            return jsonify({"message": "No transcription result produced."}), 200
 
     # Safely copy and then clear audio_data using the lock
     with audio_data_lock:
