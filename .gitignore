@@ -3,3 +3,5 @@ prompt.txt
 private
 *.pyc
 .asoundrc
+input-sounds/*
+output-text/*
