@@ -49,14 +49,24 @@ flask_port = settings.flask_port
 logging.info(f"API Key: {api_key}")
 logging.info(f"Flask Port: {flask_port}")
 
+def get_best_device():
+    """Return the best available torch device: cuda > mps > cpu."""
+    if torch.cuda.is_available():
+        return "cuda"
+    if hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        return "mps"
+    return "cpu"
+
 def print_gpu_memory_info():
     if torch.cuda.is_available():
         logging.info(f"Total GPU memory: {torch.cuda.get_device_properties(0).total_memory / 1e9:.2f} GB")
         logging.info(f"Allocated GPU memory: {torch.cuda.memory_allocated() / 1e9:.2f} GB")
         logging.info(f"Cached GPU memory: {torch.cuda.memory_reserved() / 1e9:.2f} GB")
         logging.info(f"Free GPU memory: {(torch.cuda.get_device_properties(0).total_memory - torch.cuda.memory_allocated() - torch.cuda.memory_reserved()) / 1e9:.2f} GB")
+    elif hasattr(torch.backends, "mps") and torch.backends.mps.is_available():
+        logging.info("Using Apple Silicon GPU (MPS).")
     else:
-        logging.info("CUDA is not available. Running on CPU.")
+        logging.info("No GPU available. Running on CPU.")
 
 # Global lock for protecting shared audio_data
 audio_data_lock = threading.Lock()
@@ -77,9 +87,17 @@ auto_saved_txt_path = None
 auto_saved_transcription = None
 
 def send_notification(title: str, message: str) -> None:
-    """Send a desktop notification on Linux using notify-send, with fallbacks."""
+    """Send a desktop notification (macOS via osascript, Linux via notify-send)."""
     try:
-        subprocess.run(["notify-send", title, message], check=False)
+        if sys.platform == "darwin":
+            escaped_msg = message.replace('"', '\\"')
+            escaped_title = title.replace('"', '\\"')
+            subprocess.run(
+                ["osascript", "-e", f'display notification "{escaped_msg}" with title "{escaped_title}"'],
+                check=False,
+            )
+        else:
+            subprocess.run(["notify-send", title, message], check=False)
     except Exception as e:
         logging.warning(f"Notification failed: {e}")
     # Also log and print for visibility when notifications are off
@@ -90,6 +108,7 @@ def send_notification(title: str, message: str) -> None:
 if settings.use_local_model:
     if settings.use_faster_whisper:
         logging.info(f"Using faster-whisper model: {settings.faster_whisper_model}")
+        # faster-whisper (CTranslate2) only supports cuda and cpu, not mps
         device = "cuda" if torch.cuda.is_available() else "cpu"
         compute_type = "float16" if torch.cuda.is_available() else "int8"
         logging.info(f"Using device: {device}")
@@ -129,9 +148,9 @@ if settings.use_local_model:
     else:
         import whisper
         logging.info(f"Using Whisper model: {settings.whisper_model}")
-        logging.info(f"CUDA available: {torch.cuda.is_available()}")
+        device = get_best_device()
+        logging.info(f"Using device: {device}")
         try:
-            device = "cuda" if torch.cuda.is_available() else "cpu"
             model = whisper.load_model(settings.whisper_model).to(device)
         except torch.cuda.OutOfMemoryError:
             logging.info("GPU memory insufficient, falling back to CPU")
@@ -221,7 +240,7 @@ def record_audio_continuously(max_duration=999999, device_index=None):
                 send_notification("Recording auto-stopped", "No audio data captured; nothing saved.")
                 return
 
-            mp3_file_path = Path(settings.base_folder_for_recordings) / f"{time.strftime('%Y-%m-%d-%H:%M:%S')}-{os.urandom(4).hex()}.mp3"
+            mp3_file_path = Path(settings.base_folder_for_recordings) / f"{time.strftime('%Y-%m-%d-%H-%M-%S')}-{os.urandom(4).hex()}.mp3"
             txt_file_path = mp3_file_path.with_suffix(".txt")
 
             try:
@@ -306,8 +325,8 @@ def transcribe_audio(audio_file, use_openai=False):
                 mel = whisper.log_mel_spectrogram(audio).to(model.device)
                 _, probs = model.detect_language(mel)
                 options = whisper.DecodingOptions(
-                    language=settings.language, 
-                    fp16=torch.cuda.is_available(),
+                    language=settings.language,
+                    fp16=(device == "cuda"),
                     prompt=prompt
                 )
                 result = whisper.decode(model, mel, options)
@@ -394,7 +413,7 @@ def stop_recording():
         recording_thread.join()
 
     # Prepare paths for saving the audio and transcription files
-    mp3_file_path = Path(settings.base_folder_for_recordings) / f"{time.strftime('%Y-%m-%d-%H:%M:%S')}-{os.urandom(4).hex()}.mp3"
+    mp3_file_path = Path(settings.base_folder_for_recordings) / f"{time.strftime('%Y-%m-%d-%H-%M-%S')}-{os.urandom(4).hex()}.mp3"
     txt_file_path = mp3_file_path.with_suffix(".txt")
 
     # If auto-stop already processed and saved artifacts, reuse them
